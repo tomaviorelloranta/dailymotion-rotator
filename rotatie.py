@@ -154,8 +154,6 @@ def upload_video(session: requests.Session, token: str) -> str:
         raise RotationError("video.mp4 is empty")
 
     headers = {"Authorization": f"Bearer {token}"}
-    
-    # Endpoint V2 oficial pentru upload sessions
     response = session.post(f"{API_BASE}/v2/files/upload_sessions", headers=headers, timeout=TIMEOUT)
     upload_info = checked_json(response, "Upload URL request (V2)")
     upload_url = upload_info.get("upload_url")
@@ -179,14 +177,32 @@ def upload_video(session: requests.Session, token: str) -> str:
     return source_url
 
 
+def get_profile_id(session: requests.Session, token: str) -> str:
+    headers = {"Authorization": f"Bearer {token}"}
+    try:
+        r = session.get(f"{API_BASE}/v2/me", headers=headers, timeout=TIMEOUT)
+        data = checked_json(r, "Get profile ID")
+        profiles = data.get("profiles", [])
+        if profiles and isinstance(profiles, list) and "id" in profiles[0]:
+            return profiles[0]["id"]
+    except Exception:
+        pass
+    return "x1xakj1"
+
+
 def publish_video(session: requests.Session, token: str, source_url: str, number: int) -> str:
-    # Endpoint V2 oficial cu payload JSON
+    profile_id = get_profile_id(session, token)
+    LOG.info("Public videoul pe profilul %s...", profile_id)
+
     payload = {
         "title": f"Video {number}",
-        "file_url": source_url,
-        "category": "news",
         "visibility": "public",
+        "category": "news",
         "is_for_kids": False,
+        "source": {
+            "file_url": source_url
+        },
+        "file_url": source_url,
     }
     headers = {
         "Authorization": f"Bearer {token}",
@@ -194,7 +210,10 @@ def publish_video(session: requests.Session, token: str, source_url: str, number
     }
     try:
         response = session.post(
-            f"{API_BASE}/v2/videos", json=payload, headers=headers, timeout=TIMEOUT
+            f"{API_BASE}/v2/profiles/{profile_id}/videos",
+            json=payload,
+            headers=headers,
+            timeout=TIMEOUT,
         )
     except requests.RequestException as exc:
         raise RotationError(f"Video creation request failed: {exc}") from exc
@@ -209,7 +228,6 @@ def delete_previous(session: requests.Session, token: str, previous_id: str, new
     if not previous_id or previous_id == new_id:
         return
     try:
-        # Endpoint V2 oficial pentru stergere video
         response = session.delete(
             f"{API_BASE}/v2/videos/{previous_id}",
             headers={"Authorization": f"Bearer {token}"},
