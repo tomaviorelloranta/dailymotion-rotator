@@ -217,11 +217,21 @@ def publish_video(session: requests.Session, token: str, source_url: str, number
         )
     except requests.RequestException as exc:
         raise RotationError(f"Video creation request failed: {exc}") from exc
+    
     result = checked_json(response, "Video creation (V2)")
-    video_id = result.get("id")
-    if not isinstance(video_id, str) or not VIDEO_ID_RE.fullmatch(video_id):
-        raise RotationError("Video creation response did not contain a valid video id")
-    return video_id
+    LOG.info("Raspuns Dailymotion la creare: %s", result)
+
+    # In v2, ID-ul poate fi in 'id', 'xid' sau 'video_id'
+    video_id = result.get("id") or result.get("xid") or result.get("video_id")
+    
+    # Daca e un dictionar imbricat (ex: {'data': {'id': ...}})
+    if not video_id and isinstance(result.get("data"), dict):
+        video_id = result["data"].get("id") or result["data"].get("xid")
+
+    if not video_id:
+        raise RotationError(f"Nu am gasit ID-ul in raspuns: {result}")
+        
+    return str(video_id).strip()
 
 
 def delete_previous(session: requests.Session, token: str, previous_id: str, new_id: str) -> None:
