@@ -26,6 +26,19 @@ REDIRECT_FILE = ROOT / "redirect.txt"
 TIMEOUT = (15, 120)
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9]+$")
 
+# Tokenul tău valid generat prin curl
+STATIC_TOKEN = (
+    "eyJhbGciOiJSUzI1NiIsImtpZCI6ImI5MWY5ZTVlLTlhMmYtNGIzYy04OWI3LTllNjhjNjZkMGM0MiIsInR5cCI6IkpXVCJ9."
+    "eyJpc3MiOiJodHRwczovL29hdXRoMi5kYWlseW1vdGlvbi5jb20iLCJzdWIiOiJ4NmNsNDM2IiwiY2lkIjoiOGE4ODI4ZmJj"
+    "NjIyMTdkZDdlYWYiLCJhdWQiOlsiOGE4ODI4ZmJjNjIyMTdkZDdlYWYiXSwiaWF0IjoxNzkxMzk3MDU5LCJleHAiOjE3OTE0"
+    "MDc4NTksImF0cCI6ImRlbGVnYXRpb24iLCJzY29wZSI6ImJ1bmRsZS51c2VyIiwianRpIjoiOWVjMWQ0MjgtNDEyOS00NTNk"
+    "LWI1MWItNmUyMzQ5MjhmZGU4IiwidHlwIjoiYWNjZXNzIiwib3JnIjp7ImlzX21lbWJlciI6dHJ1ZX0sImFkZyI6ZmFsc2Us"
+    "ImFpbiI6ZmFsc2UsImNhZCI6MiwiY3hwIjoyLCJjYXUiOjJ9.i8FXmJW_OZ0dqktzmKhzWA5jbG9aNhA5d8C5iQ7wLAOlXgQ"
+    "JaA56AHDx99AlOhXn4APU3bBRf_CYLxH7SXBeIyYreAz1AlE2sPvmppu8LSGRcERMaKcrUOqcEV8iQAq_s3oktQ26A1f7sGm0"
+    "dXGYWZOIrF3rwSwLBpIhahPnTUoZMYa2F47QFrWlyTEqzvNn42Ak6dnqq15Cep4V_D-YB-WOpR3DUFFqAWaifdliuj6p-v7uF"
+    "fFpLVkc5k7BwROnxb6ckhXgQUDmkwghAqBSP9JshGE_fqrYAVY-Qg2OmoSVq8StQl_717_vCkwiglK2-Qe9lVAwLuO4U8EQhkVxfg"
+)
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 LOG = logging.getLogger("dailymotion-rotator")
 
@@ -122,6 +135,15 @@ def atomic_write(path: Path, value: str) -> None:
 
 
 def get_access_token(session: requests.Session) -> str:
+    # 1. Testează mai întâi dacă tokenul static este încă valid
+    headers = {"Authorization": f"Bearer {STATIC_TOKEN}"}
+    test_res = session.get(f"{API_BASE}/file/upload", headers=headers, timeout=TIMEOUT)
+    if test_res.status_code == 200:
+        LOG.info("Folosesc tokenul static valid.")
+        return STATIC_TOKEN
+
+    # 2. Dacă a expirat, cere automat un token nou prin client_credentials
+    LOG.info("Tokenul static a expirat. Cer un token nou prin OAuth v2...")
     payload = {
         "grant_type": "client_credentials",
         "client_id": required_env("DM_API_KEY"),
@@ -141,7 +163,6 @@ def get_access_token(session: requests.Session) -> str:
             if attempt == 3:
                 break
             delay = min(2**attempt, 8)
-            LOG.warning("Token request attempt %s failed; retrying in %ss: %s", attempt + 1, delay, exc)
             time.sleep(delay)
     raise RotationError(f"OAuth token request failed after retries: {last_error}")
 
@@ -159,6 +180,7 @@ def upload_video(session: requests.Session, token: str) -> str:
     if not isinstance(upload_url, str) or not upload_url.startswith("https://"):
         raise RotationError("Dailymotion did not return a valid HTTPS upload_url")
 
+    LOG.info("Uploadez fisierul binar pe Dailymotion CDN...")
     try:
         with VIDEO_FILE.open("rb") as video:
             upload_response = session.post(
@@ -207,13 +229,6 @@ def delete_previous(session: requests.Session, token: str, previous_id: str, new
             timeout=TIMEOUT,
         )
         response.raise_for_status()
-        if response.text.strip():
-            try:
-                body = response.json()
-            except requests.exceptions.JSONDecodeError:
-                body = {}
-            if isinstance(body, dict) and body.get("error"):
-                raise RotationError(f"Delete API error: {body['error']}")
         LOG.info("Deleted previous Dailymotion video %s", previous_id)
     except (requests.RequestException, RotationError) as exc:
         LOG.warning("Could not delete previous video %s: %s", previous_id, exc)
