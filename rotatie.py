@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Upload video.mp4 to Dailymotion, publish it, and rotate the redirect state."""
+"""Upload video.mp4 to Dailymotion using API v2, publish it, and rotate redirect."""
 
 from __future__ import annotations
 
@@ -25,19 +25,6 @@ LAST_ID_FILE = ROOT / "last_id.txt"
 REDIRECT_FILE = ROOT / "redirect.txt"
 TIMEOUT = (15, 120)
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9]+$")
-
-# Tokenul tău valid generat prin curl
-STATIC_TOKEN = (
-    "eyJhbGciOiJSUzI1NiIsImtpZCI6ImI5MWY5ZTVlLTlhMmYtNGIzYy04OWI3LTllNjhjNjZkMGM0MiIsInR5cCI6IkpXVCJ9."
-    "eyJpc3MiOiJodHRwczovL29hdXRoMi5kYWlseW1vdGlvbi5jb20iLCJzdWIiOiJ4NmNsNDM2IiwiY2lkIjoiOGE4ODI4ZmJj"
-    "NjIyMTdkZDdlYWYiLCJhdWQiOlsiOGE4ODI4ZmJjNjIyMTdkZDdlYWYiXSwiaWF0IjoxNzkxMzk3MDU5LCJleHAiOjE3OTE0"
-    "MDc4NTksImF0cCI6ImRlbGVnYXRpb24iLCJzY29wZSI6ImJ1bmRsZS51c2VyIiwianRpIjoiOWVjMWQ0MjgtNDEyOS00NTNk"
-    "LWI1MWItNmUyMzQ5MjhmZGU4IiwidHlwIjoiYWNjZXNzIiwib3JnIjp7ImlzX21lbWJlciI6dHJ1ZX0sImFkZyI6ZmFsc2Us"
-    "ImFpbiI6ZmFsc2UsImNhZCI6MiwiY3hwIjoyLCJjYXUiOjJ9.i8FXmJW_OZ0dqktzmKhzWA5jbG9aNhA5d8C5iQ7wLAOlXgQ"
-    "JaA56AHDx99AlOhXn4APU3bBRf_CYLxH7SXBeIyYreAz1AlE2sPvmppu8LSGRcERMaKcrUOqcEV8iQAq_s3oktQ26A1f7sGm0"
-    "dXGYWZOIrF3rwSwLBpIhahPnTUoZMYa2F47QFrWlyTEqzvNn42Ak6dnqq15Cep4V_D-YB-WOpR3DUFFqAWaifdliuj6p-v7uF"
-    "fFpLVkc5k7BwROnxb6ckhXgQUDmkwghAqBSP9JshGE_fqrYAVY-Qg2OmoSVq8StQl_717_vCkwiglK2-Qe9lVAwLuO4U8EQhkVxfg"
-)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 LOG = logging.getLogger("dailymotion-rotator")
@@ -135,15 +122,7 @@ def atomic_write(path: Path, value: str) -> None:
 
 
 def get_access_token(session: requests.Session) -> str:
-    # 1. Testează mai întâi dacă tokenul static este încă valid
-    headers = {"Authorization": f"Bearer {STATIC_TOKEN}"}
-    test_res = session.get(f"{API_BASE}/file/upload", headers=headers, timeout=TIMEOUT)
-    if test_res.status_code == 200:
-        LOG.info("Folosesc tokenul static valid.")
-        return STATIC_TOKEN
-
-    # 2. Dacă a expirat, cere automat un token nou prin client_credentials
-    LOG.info("Tokenul static a expirat. Cer un token nou prin OAuth v2...")
+    LOG.info("Cer token nou prin OAuth v2 client_credentials...")
     payload = {
         "grant_type": "client_credentials",
         "client_id": required_env("DM_API_KEY"),
@@ -157,6 +136,7 @@ def get_access_token(session: requests.Session) -> str:
             token = data.get("access_token")
             if not isinstance(token, str) or not token:
                 raise RotationError("OAuth response did not include access_token")
+            LOG.info("Token OAuth v2 obtinut cu succes.")
             return token
         except (requests.RequestException, RotationError) as exc:
             last_error = exc
@@ -174,8 +154,10 @@ def upload_video(session: requests.Session, token: str) -> str:
         raise RotationError("video.mp4 is empty")
 
     headers = {"Authorization": f"Bearer {token}"}
-    response = session.get(f"{API_BASE}/file/upload", headers=headers, timeout=TIMEOUT)
-    upload_info = checked_json(response, "Upload URL request")
+    
+    # Endpoint V2 oficial pentru upload sessions
+    response = session.post(f"{API_BASE}/v2/files/upload_sessions", headers=headers, timeout=TIMEOUT)
+    upload_info = checked_json(response, "Upload URL request (V2)")
     upload_url = upload_info.get("upload_url")
     if not isinstance(upload_url, str) or not upload_url.startswith("https://"):
         raise RotationError("Dailymotion did not return a valid HTTPS upload_url")
@@ -198,21 +180,25 @@ def upload_video(session: requests.Session, token: str) -> str:
 
 
 def publish_video(session: requests.Session, token: str, source_url: str, number: int) -> str:
+    # Endpoint V2 oficial cu payload JSON
     payload = {
-        "url": source_url,
         "title": f"Video {number}",
-        "channel": "news",
-        "published": "true",
-        "is_created_for_kids": "false",
+        "file_url": source_url,
+        "category": "news",
+        "visibility": "public",
+        "is_for_kids": False,
     }
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
     try:
         response = session.post(
-            f"{API_BASE}/me/videos", data=payload, headers=headers, timeout=TIMEOUT
+            f"{API_BASE}/v2/videos", json=payload, headers=headers, timeout=TIMEOUT
         )
     except requests.RequestException as exc:
         raise RotationError(f"Video creation request failed: {exc}") from exc
-    result = checked_json(response, "Video creation")
+    result = checked_json(response, "Video creation (V2)")
     video_id = result.get("id")
     if not isinstance(video_id, str) or not VIDEO_ID_RE.fullmatch(video_id):
         raise RotationError("Video creation response did not contain a valid video id")
@@ -223,13 +209,16 @@ def delete_previous(session: requests.Session, token: str, previous_id: str, new
     if not previous_id or previous_id == new_id:
         return
     try:
+        # Endpoint V2 oficial pentru stergere video
         response = session.delete(
-            f"{API_BASE}/video/{previous_id}",
+            f"{API_BASE}/v2/videos/{previous_id}",
             headers={"Authorization": f"Bearer {token}"},
             timeout=TIMEOUT,
         )
-        response.raise_for_status()
-        LOG.info("Deleted previous Dailymotion video %s", previous_id)
+        if response.status_code in (200, 204):
+            LOG.info("Deleted previous Dailymotion video %s", previous_id)
+        else:
+            response.raise_for_status()
     except (requests.RequestException, RotationError) as exc:
         LOG.warning("Could not delete previous video %s: %s", previous_id, exc)
 
