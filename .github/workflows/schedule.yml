@@ -1,0 +1,51 @@
+name: Rotate Dailymotion video
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+# Prevent scheduled/manual runs from racing over the same state files.
+concurrency:
+  group: dailymotion-video-rotation
+  cancel-in-progress: false
+
+jobs:
+  rotate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: python -m pip install --disable-pip-version-check requests
+
+      - name: Upload and rotate video
+        run: python rotatie.py
+        env:
+          DM_API_KEY: ${{ secrets.DM_API_KEY }}
+          DM_API_SECRET: ${{ secrets.DM_API_SECRET }}
+          DM_USERNAME: ${{ secrets.DM_USERNAME }}
+          DM_PASSWORD: ${{ secrets.DM_PASSWORD }}
+
+      - name: Commit updated redirect state
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add redirect.txt last_id.txt counter.txt
+          if git diff --cached --quiet; then
+            echo "No state changes to commit."
+            exit 0
+          fi
+          git commit -m "Rotate Dailymotion video [skip ci]"
+          git push
