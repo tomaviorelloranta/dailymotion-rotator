@@ -130,19 +130,16 @@ def atomic_write(path: Path, value: str) -> None:
 
 
 def get_access_token(session: requests.Session) -> str:
+    url = "https://oauth2.dailymotion.com/v2/token"
     payload = {
-        "grant_type": "password",
+        "grant_type": "client_credentials",
         "client_id": required_env("DM_API_KEY"),
         "client_secret": required_env("DM_API_SECRET"),
-        "username": required_env("DM_USERNAME"),
-        "password": required_env("DM_PASSWORD"),
-        "scope": "manage_videos",
     }
-    # Token POST is safe to repeat; file upload and video creation are not.
     last_error: Exception | None = None
     for attempt in range(4):
         try:
-            response = session.post(TOKEN_URL, data=payload, timeout=TIMEOUT)
+            response = session.post(url, data=payload, timeout=TIMEOUT)
             data = checked_json(response, "OAuth token request")
             token = data.get("access_token")
             if not isinstance(token, str) or not token:
