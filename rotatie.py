@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Upload video.mp4 to Dailymotion, publish it, and rotate the redirect state.
-
-This intentionally uses Dailymotion's legacy Platform API endpoints and the
-password grant specified for this project. See the README for the current API
-compatibility caveat before configuring credentials.
-"""
+"""Upload video.mp4 to Dailymotion, publish it, and rotate the redirect state."""
 
 from __future__ import annotations
 
@@ -21,10 +16,9 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-
 ROOT = Path(__file__).resolve().parent
+TOKEN_URL = "https://oauth2.dailymotion.com/v2/token"
 API_BASE = "https://api.dailymotion.com"
-TOKEN_URL = f"{API_BASE}/oauth/token"
 VIDEO_FILE = ROOT / "video.mp4"
 COUNTER_FILE = ROOT / "counter.txt"
 LAST_ID_FILE = ROOT / "last_id.txt"
@@ -37,7 +31,7 @@ LOG = logging.getLogger("dailymotion-rotator")
 
 
 class RotationError(RuntimeError):
-    """A recoverable or actionable failure in the rotation process."""
+    """A failure in the rotation process."""
 
 
 def required_env(name: str) -> str:
@@ -48,7 +42,6 @@ def required_env(name: str) -> str:
 
 
 def make_session() -> requests.Session:
-    """Retry transient errors only for safe/idempotent HTTP methods."""
     retry = Retry(
         total=4,
         connect=4,
@@ -91,7 +84,7 @@ def read_counter() -> int:
         raw = COUNTER_FILE.read_text(encoding="utf-8").strip()
         value = int(raw)
     except (OSError, ValueError) as exc:
-        raise RotationError(f"Could not read a valid integer from {COUNTER_FILE.name}") from exc
+        raise RotationError(f"Could not read integer from {COUNTER_FILE.name}") from exc
     if value < 1:
         raise RotationError("counter.txt must contain a positive integer")
     return value
@@ -108,7 +101,6 @@ def read_previous_id() -> str:
 
 
 def atomic_write(path: Path, value: str) -> None:
-    """Replace one state file atomically, keeping it in the repository folder."""
     temp_name: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -130,7 +122,6 @@ def atomic_write(path: Path, value: str) -> None:
 
 
 def get_access_token(session: requests.Session) -> str:
-    url = "https://oauth2.dailymotion.com/v2/token"
     payload = {
         "grant_type": "client_credentials",
         "client_id": required_env("DM_API_KEY"),
@@ -139,7 +130,7 @@ def get_access_token(session: requests.Session) -> str:
     last_error: Exception | None = None
     for attempt in range(4):
         try:
-            response = session.post(url, data=payload, timeout=TIMEOUT)
+            response = session.post(TOKEN_URL, data=payload, timeout=TIMEOUT)
             data = checked_json(response, "OAuth token request")
             token = data.get("access_token")
             if not isinstance(token, str) or not token:
@@ -168,8 +159,6 @@ def upload_video(session: requests.Session, token: str) -> str:
     if not isinstance(upload_url, str) or not upload_url.startswith("https://"):
         raise RotationError("Dailymotion did not return a valid HTTPS upload_url")
 
-    # Do not automatically retry this POST: an uncertain response may mean the
-    # upload already completed, and another attempt can create orphan uploads.
     try:
         with VIDEO_FILE.open("rb") as video:
             upload_response = session.post(
@@ -195,17 +184,12 @@ def publish_video(session: requests.Session, token: str, source_url: str, number
         "is_created_for_kids": "false",
     }
     headers = {"Authorization": f"Bearer {token}"}
-    # This POST is deliberately single-attempt to avoid publishing duplicates
-    # when a connection drops after Dailymotion accepts the request.
     try:
         response = session.post(
             f"{API_BASE}/me/videos", data=payload, headers=headers, timeout=TIMEOUT
         )
     except requests.RequestException as exc:
-        raise RotationError(
-            "Video creation request failed; check Dailymotion before rerunning "
-            f"because the request may have reached the service: {exc}"
-        ) from exc
+        raise RotationError(f"Video creation request failed: {exc}") from exc
     result = checked_json(response, "Video creation")
     video_id = result.get("id")
     if not isinstance(video_id, str) or not VIDEO_ID_RE.fullmatch(video_id):
@@ -232,8 +216,6 @@ def delete_previous(session: requests.Session, token: str, previous_id: str, new
                 raise RotationError(f"Delete API error: {body['error']}")
         LOG.info("Deleted previous Dailymotion video %s", previous_id)
     except (requests.RequestException, RotationError) as exc:
-        # The new redirect and id are already persisted, so preserve a working
-        # rotation even if cleanup fails. Log clearly for manual cleanup.
         LOG.warning("Could not delete previous video %s: %s", previous_id, exc)
 
 
@@ -247,8 +229,6 @@ def main() -> int:
         new_id = publish_video(session, token, source_url, number)
         canonical_url = f"https://www.dailymotion.com/video/{new_id}"
 
-        # Persist the published asset before best-effort cleanup. This ensures
-        # the workflow can commit a valid redirect even if deletion is denied.
         atomic_write(REDIRECT_FILE, canonical_url + "\n")
         atomic_write(LAST_ID_FILE, new_id + "\n")
         atomic_write(COUNTER_FILE, f"{number + 1}\n")
